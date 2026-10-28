@@ -1,0 +1,30 @@
+services:
+  backend:
+    build: ./backend
+    container_name: mikrotik-manager-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+    networks:
+      - fleet-net
+
+  frontend:
+    build: ./frontend
+    container_name: mikrotik-manager-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:80"
+    volumes:
+      - ./frontend/src:/usr/share/nginx/html
+    depends_on:
+      - backend
+    networks:
+      - fleet-net
+
+networks:
+  fleet-net:
+    driver: bridge

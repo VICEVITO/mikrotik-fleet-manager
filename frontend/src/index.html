@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>MikroTik Fleet Manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .terminal-scroll::-webkit-scrollbar { width: 6px; }
+    .terminal-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-7xl mx-auto p-6">
+    <header class="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-3">
+          <span>MikroTik Fleet Manager</span>
+          <span class="text-xs bg-emerald-950 text-emerald-400 border border-emerald-800 px-2 py-0.5 rounded-full font-mono">REST v7</span>
+        </h1>
+        <p class="text-sm text-slate-400 mt-1">Supervision de parc & exécution directe synchronisée NetBox</p>
+      </div>
+      <button onclick="fetchDevices()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded font-medium text-sm transition flex items-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        Actualiser NetBox
+      </button>
+    </header>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden shadow-xl">
+      <table class="w-full text-left text-sm">
+        <thead class="bg-slate-800/60 text-slate-400 uppercase text-xs">
+          <tr>
+            <th class="p-4">Équipement</th>
+            <th class="p-4">Site</th>
+            <th class="p-4">IP Management</th>
+            <th class="p-4">Modèle</th>
+            <th class="p-4">Version ROS</th>
+            <th class="p-4">Firmware Actuel / Dispo</th>
+            <th class="p-4 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="devices-table" class="divide-y divide-slate-800">
+          <tr>
+            <td colspan="7" class="p-6 text-center text-slate-500">Chargement de l'inventaire NetBox...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="drawer" class="fixed inset-y-0 right-0 w-full max-w-xl bg-slate-900 border-l border-slate-800 shadow-2xl transform translate-x-full transition-transform duration-300 flex flex-col z-50">
+    <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/90">
+      <div>
+        <h2 id="drawer-title" class="text-lg font-bold text-white">Routeur</h2>
+        <p id="drawer-ip" class="text-xs font-mono text-slate-400">IP: -</p>
+      </div>
+      <button onclick="closeDrawer()" class="text-slate-400 hover:text-white p-2">✕</button>
+    </div>
+
+    <div class="p-4 flex-1 flex flex-col gap-4 overflow-y-auto">
+      <div>
+        <label class="text-xs uppercase text-slate-400 font-semibold mb-2 block">Actions Rapides</label>
+        <div class="grid grid-cols-3 gap-2">
+          <button onclick="sendQuickAction('check-update')" class="p-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-xs text-slate-200">Check Updates</button>
+          <button onclick="sendQuickAction('upgrade-firmware')" class="p-2 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800 rounded text-xs text-amber-300">Upgrade BIOS</button>
+          <button onclick="sendQuickAction('reboot')" class="p-2 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800 rounded text-xs text-rose-300">Reboot</button>
+        </div>
+      </div>
+
+      <div class="flex-1 flex flex-col">
+        <label class="text-xs uppercase text-slate-400 font-semibold mb-2 block">Terminal de sortie</label>
+        <div id="console-output" class="flex-1 bg-black/80 border border-slate-800 rounded p-3 font-mono text-xs text-slate-300 overflow-y-auto terminal-scroll whitespace-pre-wrap">Prêt.</div>
+      </div>
+
+      <div>
+        <label class="text-xs uppercase text-slate-400 font-semibold mb-2 block">Commande CLI personnalisée</label>
+        <form onsubmit="handleExecute(event)" class="flex gap-2">
+          <input id="cmd-input" type="text" placeholder="/ip address print" class="flex-1 bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono focus:outline-none focus:border-blue-500">
+          <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium">Envoyer</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let activeDevice = null;
+
+    async function fetchDevices() {
+      const tbody = document.getElementById('devices-table');
+      tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-slate-500">Interrogation de NetBox...</td></tr>';
+      try {
+        const res = await fetch('/api/devices');
+        const data = await res.json();
+        
+        if (!data.devices || data.devices.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-slate-500">Aucun routeur actif trouvé dans NetBox.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = '';
+        data.devices.forEach(dev => {
+          const row = document.createElement('tr');
+          row.className = "hover:bg-slate-800/40 transition";
+          row.innerHTML = `
+            <td class="p-4 font-semibold text-white">${dev.name}</td>
+            <td class="p-4 text-slate-400">${dev.site}</td>
+            <td class="p-4 font-mono text-slate-300">${dev.ip || '<span class="text-slate-600">Aucune</span>'}</td>
+            <td class="p-4 text-slate-400">${dev.model}</td>
+            <td class="p-4 font-mono" id="ros-${dev.id}">-</td>
+            <td class="p-4 font-mono text-xs" id="fw-${dev.id}">-</td>
+            <td class="p-4 text-right space-x-2">
+              <button onclick="auditDevice('${dev.ip}', '${dev.id}')" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded text-xs border border-slate-700">Audit</button>
+              <button onclick="openDrawer('${dev.name}', '${dev.ip}')" class="px-2.5 py-1 bg-blue-950 hover:bg-blue-900 text-blue-300 rounded text-xs border border-blue-800">Console</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-rose-400">Erreur NetBox: ${err.message}</td></tr>`;
+      }
+    }
+
+    async function auditDevice(ip, id) {
+      if (!ip || ip === 'null') return;
+      const rosEl = document.getElementById(`ros-${id}`);
+      const fwEl = document.getElementById(`fw-${id}`);
+      rosEl.innerHTML = '<span class="text-blue-400 animate-pulse">Audit...</span>';
+      
+      try {
+        const res = await fetch(`/api/devices/${ip}/status`);
+        const data = await res.json();
+        if (data.online) {
+          rosEl.innerHTML = `<span class="text-emerald-400 font-bold">${data.ros_version}</span>`;
+          fwEl.innerHTML = `<span class="text-slate-300">${data.current_firmware || 'N/A'}</span> / <span class="text-amber-400">${data.upgrade_firmware || 'N/A'}</span>`;
+        } else {
+          rosEl.innerHTML = `<span class="text-rose-500 font-semibold">Injoignable</span>`;
+          fwEl.innerText = '-';
+        }
+      } catch (e) {
+        rosEl.innerHTML = `<span class="text-rose-500">Erreur</span>`;
+      }
+    }
+
+    function openDrawer(name, ip) {
+      if (!ip || ip === 'null') {
+        alert("Ce routeur n'a pas d'IP de management renseignée dans NetBox.");
+        return;
+      }
+      activeDevice = { name, ip };
+      document.getElementById('drawer-title').innerText = name;
+      document.getElementById('drawer-ip').innerText = `IP: ${ip}`;
+      document.getElementById('console-output').innerText = `Session active : ${name} (${ip})\nEn attente d'instruction...`;
+      document.getElementById('drawer').classList.remove('translate-x-full');
+    }
+
+    function closeDrawer() {
+      document.getElementById('drawer').classList.add('translate-x-full');
+      activeDevice = null;
+    }
+
+    async function handleExecute(e) {
+      e.preventDefault();
+      if (!activeDevice) return;
+      const input = document.getElementById('cmd-input');
+      const cmd = input.value.trim();
+      if (!cmd) return;
+
+      const consoleEl = document.getElementById('console-output');
+      consoleEl.innerText += `\n\n> ${cmd}\nExécution en cours...`;
+      input.value = '';
+
+      try {
+        const res = await fetch(`/api/devices/${activeDevice.ip}/execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd })
+        });
+        const result = await res.json();
+        consoleEl.innerText += result.success ? `\n[OK] ${result.output || 'Succès'}` : `\n[ERREUR] ${result.error}`;
+      } catch (err) {
+        consoleEl.innerText += `\n[ÉCHEC HTTP] ${err.message}`;
+      }
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    async function sendQuickAction(action) {
+      if (!activeDevice) return;
+      const consoleEl = document.getElementById('console-output');
+      consoleEl.innerText += `\n\n[ACTION] Déclenchement de '${action}'...`;
+
+      try {
+        const res = await fetch(`/api/devices/${activeDevice.ip}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action })
+        });
+        const result = await res.json();
+        consoleEl.innerText += `\n${JSON.stringify(result, null, 2)}`;
+      } catch (err) {
+        consoleEl.innerText += `\n[ÉCHEC] ${err.message}`;
+      }
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    fetchDevices();
+  </script>
+</body>
+</html>
